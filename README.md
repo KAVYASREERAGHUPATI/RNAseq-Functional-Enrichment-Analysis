@@ -6,7 +6,7 @@ Automated R workflow for identifying significant differentially expressed genes 
 A reproducible **R workflow** for identifying significant differentially expressed genes (DEGs) from complete **DESeq2** results and performing **Gene Ontology (GO)** and **KEGG pathway enrichment analysis** using **g:Profiler**. The workflow automatically filters significant DEGs, separates upregulated and downregulated genes, performs functional enrichment analysis, and generates publication-quality visualizations and summary tables.
 
 # NOTE: Although developed using rice RNA-seq data, the workflow can be adapted to any organism supported by **g:Profiler** by changing the organism identifier.
-# NOTE: Use only one of the script file (Use script in Python or script in R)
+# NOTE: Use only one of the script files (Use script in Python or script in R)
 
 ## Features
 
