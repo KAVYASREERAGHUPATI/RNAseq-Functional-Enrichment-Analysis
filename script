@@ -1,0 +1,2083 @@
+# ==============================================================================
+# RNA-SEQ DIFFERENTIAL EXPRESSION AND FUNCTIONAL ENRICHMENT ANALYSIS
+# ==============================================================================
+#
+# Repository:
+# RNAseq-functional-enrichment-analysis
+#
+# Script:
+# 03_DEG_functional_enrichment_analysis.R
+#
+# Description:
+# This script reads a complete DESeq2 results table, identifies significant
+# differentially expressed genes, separates upregulated and downregulated genes,
+# and performs functional enrichment analysis using g:Profiler.
+#
+# Enrichment databases:
+#   1. Gene Ontology – Biological Process (GO:BP)
+#   2. Gene Ontology – Cellular Component (GO:CC)
+#   3. Gene Ontology – Molecular Function (GO:MF)
+#   4. Kyoto Encyclopedia of Genes and Genomes (KEGG)
+#
+# DEG significance criteria:
+#   Adjusted p-value (padj) < 0.05
+#   Absolute log2 fold change > 1
+#
+# Enrichment analyses are performed separately for:
+#   1. All significant DEGs
+#   2. Upregulated significant DEGs
+#   3. Downregulated significant DEGs
+#
+# The complete collection of genes tested by DESeq2 is used as the custom
+# background for functional enrichment analysis.
+#
+# Figures:
+#   - Top-10 enrichment bar plot
+#   - Top-10 enrichment bubble plot
+#   - Separate figures for GO:BP, GO:CC, GO:MF, and KEGG
+#   - PNG, PDF, and SVG formats
+#
+# Organism:
+# Oryza sativa
+#
+# ==============================================================================
+
+
+# ==============================================================================
+# 1. USER-DEFINED SETTINGS
+# ==============================================================================
+
+# Path to the complete DESeq2 results file.
+#
+# The file must contain:
+#   - Gene identifiers
+#   - log2 fold-change values
+#   - adjusted p-values
+#
+# The script automatically detects commonly used column names.
+
+input_file <- file.path(
+  "data",
+  "DESeq2_All_Genes_Results.csv"
+)
+
+
+# Main output directory
+
+output_directory <- file.path(
+  "results",
+  "functional_enrichment"
+)
+
+
+# Organism code used by g:Profiler.
+#
+# osativa = Oryza sativa
+
+gprofiler_organism <- "osativa"
+
+
+# DEG filtering thresholds
+
+adjusted_p_value_threshold <- 0.05
+absolute_log2fc_threshold <- 1
+
+
+# Enrichment significance threshold
+
+enrichment_fdr_threshold <- 0.05
+
+
+# Number of enriched terms displayed in each plot
+
+top_terms_to_plot <- 10
+
+
+# Plot dimensions
+
+plot_width <- 13
+plot_height <- 8
+plot_resolution <- 300
+
+
+# ==============================================================================
+# 2. REQUIRED R PACKAGES
+# ==============================================================================
+
+required_packages <- c(
+  "gprofiler2",
+  "ggplot2",
+  "dplyr",
+  "readr",
+  "stringr",
+  "forcats",
+  "tibble",
+  "scales",
+  "svglite"
+)
+
+
+# Identify packages that are not installed
+
+missing_packages <- required_packages[
+  !vapply(
+    required_packages,
+    requireNamespace,
+    quietly = TRUE,
+    FUN.VALUE = logical(1)
+  )
+]
+
+
+# Stop the analysis if required packages are unavailable
+
+if (length(missing_packages) > 0) {
+
+  stop(
+    paste0(
+      "\nThe following R packages are not installed:\n\n",
+      paste(missing_packages, collapse = ", "),
+      "\n\nInstall them using:\n\n",
+      "install.packages(c(",
+      paste0('"', missing_packages, '"', collapse = ", "),
+      "))\n"
+    ),
+    call. = FALSE
+  )
+}
+
+
+# Load required packages
+
+suppressPackageStartupMessages({
+
+  library(gprofiler2)
+  library(ggplot2)
+  library(dplyr)
+  library(readr)
+  library(stringr)
+  library(forcats)
+  library(tibble)
+  library(scales)
+  library(svglite)
+
+})
+
+
+# ==============================================================================
+# 3. CREATE OUTPUT DIRECTORIES
+# ==============================================================================
+
+figure_directory <- file.path(
+  output_directory,
+  "figures"
+)
+
+table_directory <- file.path(
+  output_directory,
+  "tables"
+)
+
+
+dir.create(
+  output_directory,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+dir.create(
+  figure_directory,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+dir.create(
+  table_directory,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+
+# ==============================================================================
+# 4. HELPER FUNCTION: DETECT COLUMN NAMES
+# ==============================================================================
+
+detect_column <- function(
+    data,
+    possible_names,
+    column_description
+) {
+
+  # Obtain original column names
+
+  original_names <- colnames(data)
+
+
+  # Convert names to lowercase for case-insensitive matching
+
+  lowercase_names <- tolower(original_names)
+  lowercase_candidates <- tolower(possible_names)
+
+
+  # Identify exact matches
+
+  matching_position <- match(
+    lowercase_candidates,
+    lowercase_names
+  )
+
+  matching_position <- matching_position[
+    !is.na(matching_position)
+  ]
+
+
+  # Stop if no suitable column was identified
+
+  if (length(matching_position) == 0) {
+
+    stop(
+      paste0(
+        "\nUnable to identify the ",
+        column_description,
+        " column.\n\n",
+        "Available columns:\n",
+        paste(original_names, collapse = ", "),
+        "\n\nAccepted column names include:\n",
+        paste(possible_names, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+
+
+  # Return the first matching original column name
+
+  return(
+    original_names[
+      matching_position[1]
+    ]
+  )
+}
+
+
+# ==============================================================================
+# 5. READ THE COMPLETE DESEQ2 RESULTS
+# ==============================================================================
+
+if (!file.exists(input_file)) {
+
+  stop(
+    paste0(
+      "\nInput file not found:\n",
+      normalizePath(
+        input_file,
+        winslash = "/",
+        mustWork = FALSE
+      ),
+      "\n\nPlace the complete DESeq2 results file in the data directory ",
+      "or update the input_file path at the beginning of the script."
+    ),
+    call. = FALSE
+  )
+}
+
+
+message("Reading DESeq2 results from: ", input_file)
+
+
+deseq2_results <- readr::read_csv(
+  file = input_file,
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+
+if (nrow(deseq2_results) == 0) {
+
+  stop(
+    "The input DESeq2 file contains no rows.",
+    call. = FALSE
+  )
+}
+
+
+# ==============================================================================
+# 6. AUTOMATICALLY DETECT REQUIRED COLUMNS
+# ==============================================================================
+
+gene_id_column <- detect_column(
+  data = deseq2_results,
+  possible_names = c(
+    "Gene_ID",
+    "GeneID",
+    "Gene",
+    "gene_id",
+    "geneid",
+    "gene",
+    "Feature",
+    "Gene_Feature",
+    "Row.names",
+    "X"
+  ),
+  column_description = "gene identifier"
+)
+
+
+log2fc_column <- detect_column(
+  data = deseq2_results,
+  possible_names = c(
+    "log2FoldChange",
+    "log2FC",
+    "logFC",
+    "LFC",
+    "log2_fold_change",
+    "log2foldchange"
+  ),
+  column_description = "log2 fold-change"
+)
+
+
+padj_column <- detect_column(
+  data = deseq2_results,
+  possible_names = c(
+    "padj",
+    "FDR",
+    "Adjusted_P_Value",
+    "Adjusted.P.Value",
+    "adj.P.Val",
+    "qvalue",
+    "q_value"
+  ),
+  column_description = "adjusted p-value"
+)
+
+
+message("Detected gene ID column: ", gene_id_column)
+message("Detected log2FC column: ", log2fc_column)
+message("Detected adjusted p-value column: ", padj_column)
+
+
+# ==============================================================================
+# 7. STANDARDISE THE REQUIRED COLUMNS
+# ==============================================================================
+
+deseq2_results_standardised <- deseq2_results %>%
+
+  dplyr::rename(
+    Gene_ID = all_of(gene_id_column),
+    log2FoldChange = all_of(log2fc_column),
+    padj = all_of(padj_column)
+  ) %>%
+
+  dplyr::mutate(
+    Gene_ID = as.character(Gene_ID),
+    log2FoldChange = suppressWarnings(
+      as.numeric(log2FoldChange)
+    ),
+    padj = suppressWarnings(
+      as.numeric(padj)
+    )
+  ) %>%
+
+  dplyr::mutate(
+    Gene_ID = stringr::str_trim(Gene_ID)
+  ) %>%
+
+  dplyr::filter(
+    !is.na(Gene_ID),
+    Gene_ID != ""
+  ) %>%
+
+  # Retain one result per gene identifier.
+  #
+  # When duplicate gene IDs occur, the row with the smallest adjusted
+  # p-value is retained.
+
+  dplyr::arrange(
+    Gene_ID,
+    padj
+  ) %>%
+
+  dplyr::distinct(
+    Gene_ID,
+    .keep_all = TRUE
+  )
+
+
+# ==============================================================================
+# 8. CREATE THE DESEQ2-TESTED BACKGROUND GENE LIST
+# ==============================================================================
+
+# All genes tested during differential expression analysis are used as the
+# custom statistical background for g:Profiler.
+
+background_genes <- deseq2_results_standardised %>%
+
+  dplyr::filter(
+    !is.na(Gene_ID),
+    Gene_ID != ""
+  ) %>%
+
+  dplyr::pull(Gene_ID) %>%
+
+  unique()
+
+
+if (length(background_genes) == 0) {
+
+  stop(
+    "No valid gene identifiers were found for the enrichment background.",
+    call. = FALSE
+  )
+}
+
+
+message(
+  "Number of unique DESeq2-tested background genes: ",
+  length(background_genes)
+)
+
+
+# ==============================================================================
+# 9. IDENTIFY SIGNIFICANT DIFFERENTIALLY EXPRESSED GENES
+# ==============================================================================
+
+significant_degs <- deseq2_results_standardised %>%
+
+  dplyr::filter(
+    !is.na(padj),
+    !is.na(log2FoldChange),
+    padj < adjusted_p_value_threshold,
+    abs(log2FoldChange) > absolute_log2fc_threshold
+  ) %>%
+
+  dplyr::mutate(
+    Regulation = dplyr::case_when(
+      log2FoldChange > absolute_log2fc_threshold ~ "Upregulated",
+      log2FoldChange < -absolute_log2fc_threshold ~ "Downregulated",
+      TRUE ~ "Not significant"
+    )
+  )
+
+
+upregulated_degs <- significant_degs %>%
+
+  dplyr::filter(
+    log2FoldChange > absolute_log2fc_threshold
+  )
+
+
+downregulated_degs <- significant_degs %>%
+
+  dplyr::filter(
+    log2FoldChange < -absolute_log2fc_threshold
+  )
+
+
+# ==============================================================================
+# 10. CREATE AND EXPORT DEG SUMMARY
+# ==============================================================================
+
+deg_summary <- tibble::tibble(
+
+  Category = c(
+    "All DESeq2-tested genes",
+    "Significant DEGs",
+    "Upregulated significant DEGs",
+    "Downregulated significant DEGs"
+  ),
+
+  Number_of_Genes = c(
+    length(background_genes),
+    nrow(significant_degs),
+    nrow(upregulated_degs),
+    nrow(downregulated_degs)
+  ),
+
+  Criteria = c(
+    "All genes retained in the complete DESeq2 results",
+    paste0(
+      "padj < ",
+      adjusted_p_value_threshold,
+      " and |log2FoldChange| > ",
+      absolute_log2fc_threshold
+    ),
+    paste0(
+      "padj < ",
+      adjusted_p_value_threshold,
+      " and log2FoldChange > ",
+      absolute_log2fc_threshold
+    ),
+    paste0(
+      "padj < ",
+      adjusted_p_value_threshold,
+      " and log2FoldChange < -",
+      absolute_log2fc_threshold
+    )
+  )
+)
+
+
+readr::write_csv(
+  deg_summary,
+  file.path(
+    table_directory,
+    "DEG_Summary.csv"
+  )
+)
+
+
+readr::write_csv(
+  deseq2_results_standardised,
+  file.path(
+    table_directory,
+    "All_DESeq2_Tested_Genes.csv"
+  )
+)
+
+
+readr::write_csv(
+  significant_degs,
+  file.path(
+    table_directory,
+    "All_Significant_DEGs.csv"
+  )
+)
+
+
+readr::write_csv(
+  upregulated_degs,
+  file.path(
+    table_directory,
+    "Upregulated_Significant_DEGs.csv"
+  )
+)
+
+
+readr::write_csv(
+  downregulated_degs,
+  file.path(
+    table_directory,
+    "Downregulated_Significant_DEGs.csv"
+  )
+)
+
+
+message("Significant DEGs identified: ", nrow(significant_degs))
+message("Upregulated DEGs identified: ", nrow(upregulated_degs))
+message("Downregulated DEGs identified: ", nrow(downregulated_degs))
+
+
+# ==============================================================================
+# 11. FUNCTION: PERFORM FUNCTIONAL ENRICHMENT
+# ==============================================================================
+
+run_functional_enrichment <- function(
+    gene_vector,
+    analysis_name,
+    background_vector
+) {
+
+  # Remove missing and duplicated identifiers
+
+  query_genes <- gene_vector %>%
+    as.character() %>%
+    stringr::str_trim() %>%
+    unique()
+
+  query_genes <- query_genes[
+    !is.na(query_genes) &
+      query_genes != ""
+  ]
+
+
+  # Skip enrichment when no genes are available
+
+  if (length(query_genes) == 0) {
+
+    warning(
+      paste0(
+        "No valid genes were available for ",
+        analysis_name,
+        ". Enrichment analysis was skipped."
+      ),
+      call. = FALSE
+    )
+
+    return(NULL)
+  }
+
+
+  message(
+    "\nRunning functional enrichment for ",
+    analysis_name,
+    " using ",
+    length(query_genes),
+    " genes..."
+  )
+
+
+  # Run g:Profiler enrichment analysis
+
+  enrichment_object <- tryCatch(
+
+    {
+
+      gprofiler2::gost(
+
+        query = query_genes,
+
+        organism = gprofiler_organism,
+
+        ordered_query = FALSE,
+
+        multi_query = FALSE,
+
+        significant = TRUE,
+
+        exclude_iea = FALSE,
+
+        measure_underrepresentation = FALSE,
+
+        evcodes = TRUE,
+
+        user_threshold = enrichment_fdr_threshold,
+
+        correction_method = "fdr",
+
+        domain_scope = "custom_annotated",
+
+        custom_bg = background_vector,
+
+        sources = c(
+          "GO:BP",
+          "GO:CC",
+          "GO:MF",
+          "KEGG"
+        )
+
+      )
+
+    },
+
+    error = function(error_object) {
+
+      warning(
+        paste0(
+          "g:Profiler failed for ",
+          analysis_name,
+          ":\n",
+          conditionMessage(error_object)
+        ),
+        call. = FALSE
+      )
+
+      return(NULL)
+    }
+
+  )
+
+
+  # Check whether any enrichment result was returned
+
+  if (
+    is.null(enrichment_object) ||
+    is.null(enrichment_object$result) ||
+    nrow(enrichment_object$result) == 0
+  ) {
+
+    warning(
+      paste0(
+        "No significant functional enrichment terms were identified for ",
+        analysis_name,
+        "."
+      ),
+      call. = FALSE
+    )
+
+    return(NULL)
+  }
+
+
+  enrichment_table <- enrichment_object$result
+
+
+  # Confirm required output columns are present
+
+  required_result_columns <- c(
+    "source",
+    "native",
+    "name",
+    "p_value",
+    "term_size",
+    "query_size",
+    "intersection_size"
+  )
+
+
+  unavailable_columns <- setdiff(
+    required_result_columns,
+    colnames(enrichment_table)
+  )
+
+
+  if (length(unavailable_columns) > 0) {
+
+    stop(
+      paste0(
+        "The g:Profiler output for ",
+        analysis_name,
+        " is missing these required columns: ",
+        paste(unavailable_columns, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+
+
+  # The g:Profiler output column called p_value contains the multiple-testing
+  # corrected enrichment significance when correction_method is specified.
+  #
+  # It is therefore renamed to Adjusted_P_Value in the exported table.
+
+  enrichment_table <- enrichment_table %>%
+
+    dplyr::mutate(
+
+      Analysis = analysis_name,
+
+      GO_KEGG_ID = as.character(native),
+
+      Term_Name = as.character(name),
+
+      Source = as.character(source),
+
+      Adjusted_P_Value = as.numeric(p_value),
+
+      Minus_Log10_Adjusted_P = -log10(
+        pmax(
+          as.numeric(p_value),
+          .Machine$double.xmin
+        )
+      ),
+
+      Gene_Count = as.numeric(intersection_size),
+
+      Query_Size = as.numeric(query_size),
+
+      Term_Size = as.numeric(term_size),
+
+      Gene_Ratio = dplyr::if_else(
+        Query_Size > 0,
+        Gene_Count / Query_Size,
+        NA_real_
+      ),
+
+      Background_Ratio = dplyr::if_else(
+        !is.na(effective_domain_size) &
+          effective_domain_size > 0,
+        Term_Size / effective_domain_size,
+        NA_real_
+      ),
+
+      Plot_Label = paste0(
+        GO_KEGG_ID,
+        " - ",
+        Term_Name
+      )
+
+    )
+
+
+  # Convert intersecting genes into a semicolon-separated field.
+  #
+  # Depending on the gprofiler2 version, the intersection column can be a
+  # list-column or a character column.
+
+  if ("intersection" %in% colnames(enrichment_table)) {
+
+    enrichment_table <- enrichment_table %>%
+
+      dplyr::mutate(
+
+        Genes_in_Term = vapply(
+
+          intersection,
+
+          FUN = function(gene_entry) {
+
+            if (is.null(gene_entry)) {
+              return(NA_character_)
+            }
+
+            if (length(gene_entry) == 0) {
+              return(NA_character_)
+            }
+
+            paste(
+              as.character(gene_entry),
+              collapse = "; "
+            )
+          },
+
+          FUN.VALUE = character(1)
+
+        )
+
+      )
+
+  } else {
+
+    enrichment_table$Genes_in_Term <- NA_character_
+
+  }
+
+
+  # Arrange the results by source and statistical significance
+
+  enrichment_table <- enrichment_table %>%
+
+    dplyr::arrange(
+      Source,
+      Adjusted_P_Value
+    )
+
+
+  # Create a publication-friendly enrichment table
+
+  export_table <- enrichment_table %>%
+
+    dplyr::select(
+      Analysis,
+      GO_KEGG_ID,
+      Term_Name,
+      Source,
+      Gene_Count,
+      Query_Size,
+      Gene_Ratio,
+      Term_Size,
+      Background_Ratio,
+      Adjusted_P_Value,
+      Minus_Log10_Adjusted_P,
+      Genes_in_Term,
+      dplyr::everything()
+    )
+
+
+  # Save the complete enrichment results
+
+  readr::write_csv(
+    export_table,
+    file.path(
+      table_directory,
+      paste0(
+        analysis_name,
+        "_Complete_Functional_Enrichment.csv"
+      )
+    )
+  )
+
+
+  # Save separate GO and KEGG category tables
+
+  enrichment_sources <- c(
+    "GO:BP",
+    "GO:CC",
+    "GO:MF",
+    "KEGG"
+  )
+
+
+  source_file_labels <- c(
+    "GO_BP",
+    "GO_CC",
+    "GO_MF",
+    "KEGG"
+  )
+
+
+  for (source_index in seq_along(enrichment_sources)) {
+
+    current_source <- enrichment_sources[source_index]
+    current_file_label <- source_file_labels[source_index]
+
+
+    category_table <- export_table %>%
+
+      dplyr::filter(
+        Source == current_source
+      )
+
+
+    if (nrow(category_table) > 0) {
+
+      readr::write_csv(
+        category_table,
+        file.path(
+          table_directory,
+          paste0(
+            analysis_name,
+            "_",
+            current_file_label,
+            "_Enrichment.csv"
+          )
+        )
+      )
+
+    }
+
+  }
+
+
+  return(enrichment_table)
+}
+
+
+# ==============================================================================
+# 12. RUN ENRICHMENT FOR ALL THREE DEG GROUPS
+# ==============================================================================
+
+all_significant_enrichment <- run_functional_enrichment(
+
+  gene_vector = significant_degs$Gene_ID,
+
+  analysis_name = "All_Significant_DEGs",
+
+  background_vector = background_genes
+
+)
+
+
+upregulated_enrichment <- run_functional_enrichment(
+
+  gene_vector = upregulated_degs$Gene_ID,
+
+  analysis_name = "Upregulated_DEGs",
+
+  background_vector = background_genes
+
+)
+
+
+downregulated_enrichment <- run_functional_enrichment(
+
+  gene_vector = downregulated_degs$Gene_ID,
+
+  analysis_name = "Downregulated_DEGs",
+
+  background_vector = background_genes
+
+)
+
+
+# ==============================================================================
+# 13. FUNCTION: SELECT THE TOP ENRICHED TERMS
+# ==============================================================================
+
+select_top_enrichment_terms <- function(
+    enrichment_data,
+    source_code,
+    top_n = 10
+) {
+
+  if (
+    is.null(enrichment_data) ||
+    nrow(enrichment_data) == 0
+  ) {
+
+    return(NULL)
+
+  }
+
+
+  top_terms <- enrichment_data %>%
+
+    dplyr::filter(
+      Source == source_code,
+      !is.na(Adjusted_P_Value),
+      Adjusted_P_Value <= enrichment_fdr_threshold
+    ) %>%
+
+    dplyr::arrange(
+      Adjusted_P_Value,
+      dplyr::desc(Gene_Count)
+    ) %>%
+
+    dplyr::slice_head(
+      n = top_n
+    ) %>%
+
+    dplyr::mutate(
+
+      Plot_Label = paste0(
+        GO_KEGG_ID,
+        " - ",
+        Term_Name
+      ),
+
+      Plot_Label = stringr::str_wrap(
+        Plot_Label,
+        width = 48
+      )
+
+    )
+
+
+  if (nrow(top_terms) == 0) {
+
+    return(NULL)
+
+  }
+
+
+  # Preserve the significance-based ordering in the plot.
+  #
+  # The first term in the table is the most statistically significant.
+  # Reversing factor levels places it at the top of the horizontal figure.
+
+  top_terms <- top_terms %>%
+
+    dplyr::mutate(
+
+      Plot_Label = factor(
+        Plot_Label,
+        levels = rev(unique(Plot_Label))
+      )
+
+    )
+
+
+  return(top_terms)
+}
+
+
+# ==============================================================================
+# 14. FUNCTION: CREATE A TOP-10 ENRICHMENT BAR PLOT
+# ==============================================================================
+
+create_enrichment_barplot <- function(
+    enrichment_data,
+    analysis_name,
+    source_code,
+    source_title,
+    output_file_label,
+    top_n = 10
+) {
+
+  plot_data <- select_top_enrichment_terms(
+
+    enrichment_data = enrichment_data,
+
+    source_code = source_code,
+
+    top_n = top_n
+
+  )
+
+
+  if (is.null(plot_data)) {
+
+    message(
+      "No significant ",
+      source_title,
+      " terms were available for the ",
+      analysis_name,
+      " bar plot."
+    )
+
+    return(NULL)
+  }
+
+
+  bar_plot <- ggplot2::ggplot(
+
+    data = plot_data,
+
+    mapping = ggplot2::aes(
+      x = Minus_Log10_Adjusted_P,
+      y = Plot_Label,
+      fill = Adjusted_P_Value
+    )
+
+  ) +
+
+    ggplot2::geom_col(
+      width = 0.72
+    ) +
+
+    ggplot2::scale_fill_viridis_c(
+
+      option = "viridis",
+
+      direction = -1,
+
+      name = "Adjusted\np-value",
+
+      labels = scales::label_scientific(
+        digits = 2
+      )
+
+    ) +
+
+    ggplot2::labs(
+
+      title = paste0(
+        "Top ",
+        top_n,
+        " Enriched Terms\n",
+        source_title,
+        " (",
+        analysis_name,
+        ")"
+      ),
+
+      x = expression(
+        -log[10]("Adjusted P-value")
+      ),
+
+      y = "Enriched Terms"
+
+    ) +
+
+    ggplot2::theme_classic(
+      base_size = 14
+    ) +
+
+    ggplot2::theme(
+
+      plot.title = ggplot2::element_text(
+        face = "bold",
+        size = 18,
+        hjust = 0.5,
+        margin = ggplot2::margin(
+          b = 12
+        )
+      ),
+
+      axis.title.x = ggplot2::element_text(
+        face = "bold",
+        size = 14,
+        margin = ggplot2::margin(
+          t = 10
+        )
+      ),
+
+      axis.title.y = ggplot2::element_text(
+        face = "bold",
+        size = 14,
+        margin = ggplot2::margin(
+          r = 10
+        )
+      ),
+
+      axis.text.x = ggplot2::element_text(
+        size = 12,
+        colour = "black"
+      ),
+
+      axis.text.y = ggplot2::element_text(
+        size = 11,
+        colour = "black"
+      ),
+
+      legend.title = ggplot2::element_text(
+        face = "bold",
+        size = 11
+      ),
+
+      legend.text = ggplot2::element_text(
+        size = 10
+      ),
+
+      legend.position = "right",
+
+      panel.border = ggplot2::element_rect(
+        colour = "black",
+        fill = NA,
+        linewidth = 0.8
+      ),
+
+      plot.margin = ggplot2::margin(
+        t = 15,
+        r = 20,
+        b = 15,
+        l = 15
+      )
+
+    )
+
+
+  base_filename <- file.path(
+
+    figure_directory,
+
+    paste0(
+      analysis_name,
+      "_",
+      output_file_label,
+      "_Top",
+      top_n,
+      "_Barplot"
+    )
+
+  )
+
+
+  # Save PNG
+
+  ggplot2::ggsave(
+
+    filename = paste0(
+      base_filename,
+      ".png"
+    ),
+
+    plot = bar_plot,
+
+    width = plot_width,
+
+    height = plot_height,
+
+    units = "in",
+
+    dpi = plot_resolution,
+
+    bg = "white"
+
+  )
+
+
+  # Save PDF
+
+  ggplot2::ggsave(
+
+    filename = paste0(
+      base_filename,
+      ".pdf"
+    ),
+
+    plot = bar_plot,
+
+    width = plot_width,
+
+    height = plot_height,
+
+    units = "in",
+
+    bg = "white",
+
+    device = cairo_pdf
+
+  )
+
+
+  # Save SVG
+
+  ggplot2::ggsave(
+
+    filename = paste0(
+      base_filename,
+      ".svg"
+    ),
+
+    plot = bar_plot,
+
+    width = plot_width,
+
+    height = plot_height,
+
+    units = "in",
+
+    bg = "white",
+
+    device = svglite::svglite
+
+  )
+
+
+  return(bar_plot)
+}
+
+
+# ==============================================================================
+# 15. FUNCTION: CREATE A TOP-10 ENRICHMENT BUBBLE PLOT
+# ==============================================================================
+
+create_enrichment_bubbleplot <- function(
+    enrichment_data,
+    analysis_name,
+    source_code,
+    source_title,
+    output_file_label,
+    top_n = 10
+) {
+
+  plot_data <- select_top_enrichment_terms(
+
+    enrichment_data = enrichment_data,
+
+    source_code = source_code,
+
+    top_n = top_n
+
+  )
+
+
+  if (is.null(plot_data)) {
+
+    message(
+      "No significant ",
+      source_title,
+      " terms were available for the ",
+      analysis_name,
+      " bubble plot."
+    )
+
+    return(NULL)
+  }
+
+
+  # The bubble plot follows the requested design:
+  #
+  # x-axis:
+  #   -log10 adjusted p-value
+  #
+  # y-axis:
+  #   enriched GO or KEGG terms
+  #
+  # bubble size:
+  #   number of input genes associated with the enriched term
+  #
+  # bubble colour:
+  #   adjusted enrichment p-value
+
+  bubble_plot <- ggplot2::ggplot(
+
+    data = plot_data,
+
+    mapping = ggplot2::aes(
+
+      x = Minus_Log10_Adjusted_P,
+
+      y = Plot_Label,
+
+      size = Gene_Count,
+
+      colour = Adjusted_P_Value
+
+    )
+
+  ) +
+
+    ggplot2::geom_point(
+      alpha = 0.90
+    ) +
+
+    ggplot2::scale_colour_viridis_c(
+
+      option = "viridis",
+
+      direction = -1,
+
+      name = "Adjusted\np-value",
+
+      labels = scales::label_scientific(
+        digits = 2
+      )
+
+    ) +
+
+    ggplot2::scale_size_continuous(
+
+      name = "Gene count",
+
+      range = c(
+        4,
+        14
+      ),
+
+      breaks = scales::breaks_pretty(
+        n = 5
+      )
+
+    ) +
+
+    ggplot2::labs(
+
+      title = paste0(
+        "Top ",
+        top_n,
+        " Enriched Terms\n",
+        source_title,
+        " (",
+        analysis_name,
+        ")"
+      ),
+
+      x = expression(
+        -log[10]("Adjusted P-value")
+      ),
+
+      y = "Enriched Terms"
+
+    ) +
+
+    ggplot2::theme_classic(
+      base_size = 14
+    ) +
+
+    ggplot2::theme(
+
+      plot.title = ggplot2::element_text(
+        face = "bold",
+        size = 18,
+        hjust = 0.5,
+        margin = ggplot2::margin(
+          b = 12
+        )
+      ),
+
+      axis.title.x = ggplot2::element_text(
+        face = "bold",
+        size = 14,
+        margin = ggplot2::margin(
+          t = 10
+        )
+      ),
+
+      axis.title.y = ggplot2::element_text(
+        face = "bold",
+        size = 14,
+        margin = ggplot2::margin(
+          r = 10
+        )
+      ),
+
+      axis.text.x = ggplot2::element_text(
+        size = 12,
+        colour = "black"
+      ),
+
+      axis.text.y = ggplot2::element_text(
+        size = 11,
+        colour = "black"
+      ),
+
+      legend.title = ggplot2::element_text(
+        face = "bold",
+        size = 11
+      ),
+
+      legend.text = ggplot2::element_text(
+        size = 10
+      ),
+
+      legend.position = "right",
+
+      panel.border = ggplot2::element_rect(
+        colour = "black",
+        fill = NA,
+        linewidth = 0.8
+      ),
+
+      plot.margin = ggplot2::margin(
+        t = 15,
+        r = 20,
+        b = 15,
+        l = 15
+      )
+
+    )
+
+
+  base_filename <- file.path(
+
+    figure_directory,
+
+    paste0(
+      analysis_name,
+      "_",
+      output_file_label,
+      "_Top",
+      top_n,
+      "_Bubbleplot"
+    )
+
+  )
+
+
+  # Save PNG
+
+  ggplot2::ggsave(
+
+    filename = paste0(
+      base_filename,
+      ".png"
+    ),
+
+    plot = bubble_plot,
+
+    width = plot_width,
+
+    height = plot_height,
+
+    units = "in",
+
+    dpi = plot_resolution,
+
+    bg = "white"
+
+  )
+
+
+  # Save PDF
+
+  ggplot2::ggsave(
+
+    filename = paste0(
+      base_filename,
+      ".pdf"
+    ),
+
+    plot = bubble_plot,
+
+    width = plot_width,
+
+    height = plot_height,
+
+    units = "in",
+
+    bg = "white",
+
+    device = cairo_pdf
+
+  )
+
+
+  # Save SVG
+
+  ggplot2::ggsave(
+
+    filename = paste0(
+      base_filename,
+      ".svg"
+    ),
+
+    plot = bubble_plot,
+
+    width = plot_width,
+
+    height = plot_height,
+
+    units = "in",
+
+    bg = "white",
+
+    device = svglite::svglite
+
+  )
+
+
+  return(bubble_plot)
+}
+
+
+# ==============================================================================
+# 16. FUNCTION: CREATE ALL GO AND KEGG PLOTS FOR ONE DEG GROUP
+# ==============================================================================
+
+create_all_enrichment_plots <- function(
+    enrichment_data,
+    analysis_name
+) {
+
+  if (
+    is.null(enrichment_data) ||
+    nrow(enrichment_data) == 0
+  ) {
+
+    message(
+      "No enrichment plots were generated for ",
+      analysis_name,
+      " because no significant enrichment results were available."
+    )
+
+    return(invisible(NULL))
+  }
+
+
+  enrichment_categories <- tibble::tribble(
+
+    ~source_code, ~source_title, ~file_label,
+
+    "GO:BP", "GO:BP", "GO_BP",
+
+    "GO:CC", "GO:CC", "GO_CC",
+
+    "GO:MF", "GO:MF", "GO_MF",
+
+    "KEGG", "KEGG", "KEGG"
+
+  )
+
+
+  generated_plots <- list()
+
+
+  for (
+    category_index in seq_len(
+      nrow(enrichment_categories)
+    )
+  ) {
+
+    current_source <- enrichment_categories$source_code[
+      category_index
+    ]
+
+    current_title <- enrichment_categories$source_title[
+      category_index
+    ]
+
+    current_file_label <- enrichment_categories$file_label[
+      category_index
+    ]
+
+
+    barplot_name <- paste0(
+      current_file_label,
+      "_barplot"
+    )
+
+    bubbleplot_name <- paste0(
+      current_file_label,
+      "_bubbleplot"
+    )
+
+
+    generated_plots[[barplot_name]] <- create_enrichment_barplot(
+
+      enrichment_data = enrichment_data,
+
+      analysis_name = analysis_name,
+
+      source_code = current_source,
+
+      source_title = current_title,
+
+      output_file_label = current_file_label,
+
+      top_n = top_terms_to_plot
+
+    )
+
+
+    generated_plots[[bubbleplot_name]] <- create_enrichment_bubbleplot(
+
+      enrichment_data = enrichment_data,
+
+      analysis_name = analysis_name,
+
+      source_code = current_source,
+
+      source_title = current_title,
+
+      output_file_label = current_file_label,
+
+      top_n = top_terms_to_plot
+
+    )
+
+  }
+
+
+  return(
+    invisible(generated_plots)
+  )
+}
+
+
+# ==============================================================================
+# 17. GENERATE ALL BAR PLOTS AND BUBBLE PLOTS
+# ==============================================================================
+
+message(
+  "\nGenerating GO and KEGG plots for all significant DEGs..."
+)
+
+all_significant_plots <- create_all_enrichment_plots(
+
+  enrichment_data = all_significant_enrichment,
+
+  analysis_name = "All_Significant_DEGs"
+
+)
+
+
+message(
+  "\nGenerating GO and KEGG plots for upregulated DEGs..."
+)
+
+upregulated_plots <- create_all_enrichment_plots(
+
+  enrichment_data = upregulated_enrichment,
+
+  analysis_name = "Upregulated_DEGs"
+
+)
+
+
+message(
+  "\nGenerating GO and KEGG plots for downregulated DEGs..."
+)
+
+downregulated_plots <- create_all_enrichment_plots(
+
+  enrichment_data = downregulated_enrichment,
+
+  analysis_name = "Downregulated_DEGs"
+
+)
+
+
+# ==============================================================================
+# 18. EXPORT TOP-10 TERMS USED IN THE FIGURES
+# ==============================================================================
+
+export_top_terms <- function(
+    enrichment_data,
+    analysis_name
+) {
+
+  if (
+    is.null(enrichment_data) ||
+    nrow(enrichment_data) == 0
+  ) {
+
+    return(invisible(NULL))
+  }
+
+
+  source_mapping <- tibble::tribble(
+
+    ~Source, ~File_Label,
+
+    "GO:BP", "GO_BP",
+
+    "GO:CC", "GO_CC",
+
+    "GO:MF", "GO_MF",
+
+    "KEGG", "KEGG"
+
+  )
+
+
+  for (
+    mapping_index in seq_len(
+      nrow(source_mapping)
+    )
+  ) {
+
+    current_source <- source_mapping$Source[
+      mapping_index
+    ]
+
+    current_file_label <- source_mapping$File_Label[
+      mapping_index
+    ]
+
+
+    top_table <- select_top_enrichment_terms(
+
+      enrichment_data = enrichment_data,
+
+      source_code = current_source,
+
+      top_n = top_terms_to_plot
+
+    )
+
+
+    if (!is.null(top_table)) {
+
+      top_table_export <- top_table %>%
+
+        dplyr::mutate(
+          Plot_Label = as.character(Plot_Label)
+        ) %>%
+
+        dplyr::select(
+          Analysis,
+          GO_KEGG_ID,
+          Term_Name,
+          Source,
+          Gene_Count,
+          Query_Size,
+          Gene_Ratio,
+          Term_Size,
+          Background_Ratio,
+          Adjusted_P_Value,
+          Minus_Log10_Adjusted_P,
+          Genes_in_Term,
+          dplyr::everything()
+        )
+
+
+      readr::write_csv(
+
+        top_table_export,
+
+        file.path(
+          table_directory,
+          paste0(
+            analysis_name,
+            "_",
+            current_file_label,
+            "_Top",
+            top_terms_to_plot,
+            "_Terms.csv"
+          )
+        )
+
+      )
+
+    }
+
+  }
+
+
+  return(invisible(NULL))
+}
+
+
+export_top_terms(
+  enrichment_data = all_significant_enrichment,
+  analysis_name = "All_Significant_DEGs"
+)
+
+
+export_top_terms(
+  enrichment_data = upregulated_enrichment,
+  analysis_name = "Upregulated_DEGs"
+)
+
+
+export_top_terms(
+  enrichment_data = downregulated_enrichment,
+  analysis_name = "Downregulated_DEGs"
+)
+
+
+# ==============================================================================
+# 19. SAVE ANALYSIS SETTINGS
+# ==============================================================================
+
+analysis_settings <- tibble::tibble(
+
+  Setting = c(
+    "Input file",
+    "Organism",
+    "g:Profiler organism code",
+    "DEG adjusted p-value threshold",
+    "DEG absolute log2FC threshold",
+    "Enrichment FDR threshold",
+    "Number of terms per plot",
+    "Background definition",
+    "Enrichment databases",
+    "Plot formats",
+    "Plot resolution"
+  ),
+
+  Value = c(
+    normalizePath(
+      input_file,
+      winslash = "/",
+      mustWork = FALSE
+    ),
+    "Oryza sativa",
+    gprofiler_organism,
+    adjusted_p_value_threshold,
+    absolute_log2fc_threshold,
+    enrichment_fdr_threshold,
+    top_terms_to_plot,
+    "All genes tested in the complete DESeq2 results",
+    "GO:BP; GO:CC; GO:MF; KEGG",
+    "PNG; PDF; SVG",
+    paste0(
+      plot_resolution,
+      " dpi"
+    )
+  )
+
+)
+
+
+readr::write_csv(
+  analysis_settings,
+  file.path(
+    table_directory,
+    "Analysis_Settings.csv"
+  )
+)
+
+
+# ==============================================================================
+# 20. SAVE R SESSION INFORMATION
+# ==============================================================================
+
+session_information_file <- file.path(
+  output_directory,
+  "Session_Info.txt"
+)
+
+
+sink(
+  session_information_file
+)
+
+cat(
+  "RNA-seq Functional Enrichment Analysis\n"
+)
+
+cat(
+  "======================================\n\n"
+)
+
+cat(
+  "Analysis completed on: ",
+  format(
+    Sys.time(),
+    "%Y-%m-%d %H:%M:%S"
+  ),
+  "\n\n",
+  sep = ""
+)
+
+cat(
+  "R session information:\n\n"
+)
+
+print(
+  sessionInfo()
+)
+
+sink()
+
+
+# ==============================================================================
+# 21. FINAL ANALYSIS SUMMARY
+# ==============================================================================
+
+cat(
+  "\n",
+  paste(rep("=", 78), collapse = ""),
+  "\n",
+  sep = ""
+)
+
+cat(
+  "FUNCTIONAL ENRICHMENT ANALYSIS COMPLETED\n"
+)
+
+cat(
+  paste(rep("=", 78), collapse = ""),
+  "\n\n",
+  sep = ""
+)
+
+cat(
+  "All DESeq2-tested genes: ",
+  length(background_genes),
+  "\n",
+  sep = ""
+)
+
+cat(
+  "Significant DEGs: ",
+  nrow(significant_degs),
+  "\n",
+  sep = ""
+)
+
+cat(
+  "Upregulated significant DEGs: ",
+  nrow(upregulated_degs),
+  "\n",
+  sep = ""
+)
+
+cat(
+  "Downregulated significant DEGs: ",
+  nrow(downregulated_degs),
+  "\n\n",
+  sep = ""
+)
+
+cat(
+  "DEG thresholds:\n"
+)
+
+cat(
+  "  padj < ",
+  adjusted_p_value_threshold,
+  "\n",
+  sep = ""
+)
+
+cat(
+  "  |log2FoldChange| > ",
+  absolute_log2fc_threshold,
+  "\n\n",
+  sep = ""
+)
+
+cat(
+  "Enrichment databases:\n"
+)
+
+cat(
+  "  GO Biological Process\n",
+  "  GO Cellular Component\n",
+  "  GO Molecular Function\n",
+  "  KEGG pathways\n\n",
+  sep = ""
+)
+
+cat(
+  "Figures saved to:\n  ",
+  normalizePath(
+    figure_directory,
+    winslash = "/",
+    mustWork = FALSE
+  ),
+  "\n\n",
+  sep = ""
+)
+
+cat(
+  "Tables saved to:\n  ",
+  normalizePath(
+    table_directory,
+    winslash = "/",
+    mustWork = FALSE
+  ),
+  "\n\n",
+  sep = ""
+)
+
+cat(
+  "Session information saved to:\n  ",
+  normalizePath(
+    session_information_file,
+    winslash = "/",
+    mustWork = FALSE
+  ),
+  "\n",
+  sep = ""
+)
+
+cat(
+  paste(rep("=", 78), collapse = ""),
+  "\n",
+  sep = ""
+)
