@@ -42,8 +42,8 @@ RNAseq-functional-enrichment-analysis/
 │   └── DEG_functional_enrichment_analysis.R
 │
 ├── results/
-│  ├── figures/
-|  ├── tables/       
+│  ├── figures.md
+|  ├── tables.md       
 │
 ├── README.md
 ├── LICENSE
