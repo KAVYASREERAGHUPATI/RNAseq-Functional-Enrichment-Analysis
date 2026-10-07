@@ -1,50 +1,40 @@
-# ==============================================================================
-# RNA-SEQ DIFFERENTIAL EXPRESSION AND FUNCTIONAL ENRICHMENT ANALYSIS
-# ==============================================================================
+
 # Repository:
 # RNAseq-functional-enrichment-analysis
-#
-# Script:
-# 03_DEG_functional_enrichment_analysis.R
-#
+
+
 # Description:
 # This script reads a complete DESeq2 results table, identifies significant
 # differentially expressed genes, separates upregulated and downregulated genes,
 # and performs functional enrichment analysis using g:Profiler.
-#
+
 # Enrichment databases:
 #   1. Gene Ontology – Biological Process (GO:BP)
 #   2. Gene Ontology – Cellular Component (GO:CC)
 #   3. Gene Ontology – Molecular Function (GO:MF)
 #   4. Kyoto Encyclopedia of Genes and Genomes (KEGG)
-#
+
 # DEG significance criteria:
 #   Adjusted p-value (padj) < 0.05
 #   Absolute log2 fold change > 1
-#
+
 # Enrichment analyses are performed separately for:
 #   1. All significant DEGs
 #   2. Upregulated significant DEGs
 #   3. Downregulated significant DEGs
-#
+
 # The complete collection of genes tested by DESeq2 is used as the custom
 # background for functional enrichment analysis.
-#
+
 # Figures:
 #   - Top-10 enrichment bar plot
 #   - Top-10 enrichment bubble plot
 #   - Separate figures for GO:BP, GO:CC, GO:MF, and KEGG
 #   - PNG, PDF, and SVG formats
 #
-# Organism:
-# Oryza sativa
-#
-# ==============================================================================
 
 
-# ==============================================================================
 # 1. USER-DEFINED SETTINGS
-# ==============================================================================
 
 # Path to the complete DESeq2 results file.
 #
@@ -70,7 +60,6 @@ output_directory <- file.path(
 
 
 # Organism code used by g:Profiler.
-#
 # osativa = Oryza sativa
 
 gprofiler_organism <- "osativa"
@@ -99,9 +88,8 @@ plot_height <- 8
 plot_resolution <- 300
 
 
-# ==============================================================================
+
 # 2. REQUIRED R PACKAGES
-# ==============================================================================
 
 required_packages <- c(
   "gprofiler2",
@@ -163,9 +151,9 @@ suppressPackageStartupMessages({
 })
 
 
-# ==============================================================================
+
 # 3. CREATE OUTPUT DIRECTORIES
-# ==============================================================================
+
 
 figure_directory <- file.path(
   output_directory,
@@ -197,9 +185,8 @@ dir.create(
 )
 
 
-# ==============================================================================
+
 # 4. HELPER FUNCTION: DETECT COLUMN NAMES
-# ==============================================================================
 
 detect_column <- function(
     data,
@@ -259,9 +246,8 @@ detect_column <- function(
 }
 
 
-# ==============================================================================
+
 # 5. READ THE COMPLETE DESEQ2 RESULTS
-# ==============================================================================
 
 if (!file.exists(input_file)) {
 
@@ -300,9 +286,8 @@ if (nrow(deseq2_results) == 0) {
 }
 
 
-# ==============================================================================
+
 # 6. AUTOMATICALLY DETECT REQUIRED COLUMNS
-# ==============================================================================
 
 gene_id_column <- detect_column(
   data = deseq2_results,
@@ -356,9 +341,8 @@ message("Detected log2FC column: ", log2fc_column)
 message("Detected adjusted p-value column: ", padj_column)
 
 
-# ==============================================================================
+
 # 7. STANDARDISE THE REQUIRED COLUMNS
-# ==============================================================================
 
 deseq2_results_standardised <- deseq2_results %>%
 
@@ -403,12 +387,10 @@ deseq2_results_standardised <- deseq2_results %>%
   )
 
 
-# ==============================================================================
-# 8. CREATE THE DESEQ2-TESTED BACKGROUND GENE LIST
-# ==============================================================================
 
-# All genes tested during differential expression analysis are used as the
-# custom statistical background for g:Profiler.
+# 8. CREATE THE DESEQ2-TESTED BACKGROUND GENE LIST
+
+# All genes tested during differential expression analysis are used as the custom statistical background for g:Profiler.
 
 background_genes <- deseq2_results_standardised %>%
 
@@ -437,9 +419,8 @@ message(
 )
 
 
-# ==============================================================================
+
 # 9. IDENTIFY SIGNIFICANT DIFFERENTIALLY EXPRESSED GENES
-# ==============================================================================
 
 significant_degs <- deseq2_results_standardised %>%
 
@@ -473,9 +454,9 @@ downregulated_degs <- significant_degs %>%
   )
 
 
-# ==============================================================================
+
 # 10. CREATE AND EXPORT DEG SUMMARY
-# ==============================================================================
+
 
 deg_summary <- tibble::tibble(
 
@@ -561,15 +542,13 @@ readr::write_csv(
   )
 )
 
-
 message("Significant DEGs identified: ", nrow(significant_degs))
 message("Upregulated DEGs identified: ", nrow(upregulated_degs))
 message("Downregulated DEGs identified: ", nrow(downregulated_degs))
 
 
-# ==============================================================================
+
 # 11. FUNCTION: PERFORM FUNCTIONAL ENRICHMENT
-# ==============================================================================
 
 run_functional_enrichment <- function(
     gene_vector,
@@ -932,9 +911,9 @@ run_functional_enrichment <- function(
 }
 
 
-# ==============================================================================
+
 # 12. RUN ENRICHMENT FOR ALL THREE DEG GROUPS
-# ==============================================================================
+
 
 all_significant_enrichment <- run_functional_enrichment(
 
@@ -969,9 +948,9 @@ downregulated_enrichment <- run_functional_enrichment(
 )
 
 
-# ==============================================================================
+
 # 13. FUNCTION: SELECT THE TOP ENRICHED TERMS
-# ==============================================================================
+
 
 select_top_enrichment_terms <- function(
     enrichment_data,
@@ -1050,9 +1029,9 @@ select_top_enrichment_terms <- function(
 }
 
 
-# ==============================================================================
+
 # 14. FUNCTION: CREATE A TOP-10 ENRICHMENT BAR PLOT
-# ==============================================================================
+
 
 create_enrichment_barplot <- function(
     enrichment_data,
@@ -1298,9 +1277,9 @@ create_enrichment_barplot <- function(
 }
 
 
-# ==============================================================================
+
 # 15. FUNCTION: CREATE A TOP-10 ENRICHMENT BUBBLE PLOT
-# ==============================================================================
+
 
 create_enrichment_bubbleplot <- function(
     enrichment_data,
@@ -1581,9 +1560,9 @@ create_enrichment_bubbleplot <- function(
 }
 
 
-# ==============================================================================
+
 # 16. FUNCTION: CREATE ALL GO AND KEGG PLOTS FOR ONE DEG GROUP
-# ==============================================================================
+
 
 create_all_enrichment_plots <- function(
     enrichment_data,
@@ -1695,9 +1674,8 @@ create_all_enrichment_plots <- function(
 }
 
 
-# ==============================================================================
+
 # 17. GENERATE ALL BAR PLOTS AND BUBBLE PLOTS
-# ==============================================================================
 
 message(
   "\nGenerating GO and KEGG plots for all significant DEGs..."
@@ -1867,9 +1845,9 @@ export_top_terms(
 )
 
 
-# ==============================================================================
+
 # 19. SAVE ANALYSIS SETTINGS
-# ==============================================================================
+
 
 analysis_settings <- tibble::tibble(
 
@@ -1920,9 +1898,9 @@ readr::write_csv(
 )
 
 
-# ==============================================================================
+
 # 20. SAVE R SESSION INFORMATION
-# ==============================================================================
+
 
 session_information_file <- file.path(
   output_directory,
@@ -1963,9 +1941,9 @@ print(
 sink()
 
 
-# ==============================================================================
+
 # 21. FINAL ANALYSIS SUMMARY
-# ==============================================================================
+
 
 cat(
   "\n",
